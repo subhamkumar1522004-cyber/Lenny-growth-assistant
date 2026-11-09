@@ -1,0 +1,65 @@
+# One-command startup — README §5 "Evaluator Quick Start", architecture.md §3a.
+#
+# Ollama is intentionally NOT a service here. Containerizing a model runtime
+# that needs host GPU/CPU acceleration and multi-GB model weights makes the
+# "mandatory local Ollama demo" *less* practical, not more — see
+# architecture.md §3a for the full reasoning. Ollama runs natively on your
+# host; the backend container reaches it via OLLAMA_BASE_URL, which on
+# Docker Desktop (macOS) is http://host.docker.internal:11434 and on Linux is
+# usually http://172.17.0.1:11434 (the docker0 bridge) — both are called out
+# in .env.example and README §5.4.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lenny-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lenny
+      POSTGRES_PASSWORD: lenny
+      POSTGRES_DB: lenny
+    ports:
+      - "5432:5432"
+    volumes:
+      - lenny-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lenny -d lenny"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: lenny-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Overrides .env's DATABASE_URL so the backend reaches the compose
+      # network's postgres service by name instead of localhost.
+      DATABASE_URL: postgresql+asyncpg://lenny:lenny@postgres:5432/lenny
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      # Lets OLLAMA_BASE_URL=http://host.docker.internal:11434 work on Linux
+      # too, where that hostname does not resolve by default.
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: lenny-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+
+volumes:
+  lenny-pgdata:
